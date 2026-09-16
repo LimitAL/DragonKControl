@@ -24,6 +24,9 @@ struct MainView: View {
                         HStack {
                             Label(manager.connectionState, systemImage: manager.isConnected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
                             Spacer()
+                            Label(manager.operatingState.rawValue,
+                                  systemImage: manager.operatingState == .running ? "bolt.fill" : "pause.circle")
+                                .foregroundStyle(manager.operatingState == .running ? .green : .secondary)
                             Text(manager.rssi).foregroundStyle(.secondary)
                         }
                         Text(manager.bluetoothState).foregroundStyle(.secondary)
@@ -41,6 +44,21 @@ struct MainView: View {
                         Text("水泵与风扇可以分别设定目标值。设备会根据自身温控策略调整实时输出。")
                             .font(.callout).foregroundStyle(.secondary)
                         HStack(spacing: 12) {
+                            Button {
+                                waterLevel = 42
+                                fanLevel = 42
+                                manager.enterStandby()
+                            } label: {
+                                Label("进入待机 · 42/42", systemImage: "pause.circle.fill")
+                            }
+                            Button {
+                                manager.startRunning(water: Int(waterLevel), fan: Int(fanLevel))
+                            } label: {
+                                Label("运行 · 应用当前设定", systemImage: "play.circle.fill")
+                            }
+                        }
+                        .disabled(!manager.canSend)
+                        HStack(spacing: 12) {
                             presetButton("低", level: 42, symbol: "fanblades")
                             presetButton("中", level: 70, symbol: "fanblades.fill")
                             presetButton("高", level: 100, symbol: "wind")
@@ -51,8 +69,10 @@ struct MainView: View {
                             manager.sendTargets(water: Int(waterLevel), fan: Int(fanLevel))
                         }.disabled(!manager.canSend)
                         HStack(spacing: 22) {
-                            feedback("水泵", target: manager.confirmedWater, running: manager.runningWater)
-                            feedback("风扇", target: manager.confirmedFan, running: manager.runningFan)
+                            feedback("水泵", target: manager.requestedWater, confirmed: manager.confirmedWater, output: manager.waterOutput,
+                                     demand: manager.waterDemand)
+                            feedback("风扇", target: manager.requestedFan, confirmed: manager.confirmedFan, output: manager.fanOutput,
+                                     demand: manager.fanDemand)
                         }
                         Text(manager.statusMessage).font(.callout).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -62,18 +82,18 @@ struct MainView: View {
                 GroupBox("运行趋势") {
                     VStack(alignment: .leading, spacing: 10) {
                         if manager.samples.isEmpty {
-                            Text("连接后将在这里显示水泵与风扇的设备运行回报。")
+                            Text("连接后将在这里显示水泵与风扇的设备输出。")
                                 .foregroundStyle(.secondary)
                         } else {
                             Chart(manager.samples) { sample in
                                 LineMark(x: .value("时间", sample.timestamp),
-                                         y: .value("运行回报", sample.value))
+                                         y: .value("设备输出", sample.value))
                                     .foregroundStyle(by: .value("通道", sample.channel))
                             }
                             .chartYScale(domain: 0...100)
                             .frame(height: 175)
                         }
-                        Text("数值来自设备通知，尚未校准为转速或真实功率。")
+                        Text("数值来自设备通知。控制器会按温控策略暂停某一路，因此运行时单路输出为 0 属于有效状态；数值尚未校准为 RPM。")
                             .font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                 }
@@ -85,6 +105,17 @@ struct MainView: View {
                         Text("控制包来自本机官方 DragonKing 1.2.0；水泵与风扇的独立设定已通过设备状态回报验证。")
                             .font(.callout).foregroundStyle(.secondary)
                     }.padding(6)
+                }
+
+                GroupBox("连接稳定性") {
+                    HStack(spacing: 24) {
+                        metric("通知", "\(manager.notificationCount)")
+                        metric("断开", "\(manager.disconnectCount)")
+                        metric("自动恢复", "\(manager.reconnectCount)")
+                        metric("最长通知间隔", String(format: "%.1f 秒", manager.longestNotificationGap))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
                 }
 
                 GroupBox("BLE 特征与诊断") {
@@ -133,12 +164,21 @@ struct MainView: View {
         }
     }
 
-    private func feedback(_ title: String, target: Int?, running: Int?) -> some View {
+    private func feedback(_ title: String, target: Int?, confirmed: Int?, output: Int?, demand: Int?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("\(title)目标：\(target.map { "\($0)%" } ?? "等待反馈")")
+            Text("\(title)已发送目标：\(target.map { "\($0)%" } ?? "—")")
                 .font(.headline)
-            Text("运行回报：\(running.map { "\($0)%" } ?? "—")")
+            Text("设备目标：\(confirmed.map { "\($0)%" } ?? "—")")
                 .font(.callout).foregroundStyle(.secondary)
+            Text("设备输出：\(output.map { "\($0)%" } ?? "—") · 调度：\(demand.map { "\($0)%" } ?? "—")")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.headline.monospacedDigit())
         }
     }
 }

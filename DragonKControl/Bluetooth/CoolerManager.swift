@@ -19,21 +19,36 @@ struct CharacteristicRow: Identifiable {
 }
 
 final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+    enum OperatingState: String {
+        case unknown = "等待设备状态"
+        case standby = "待机"
+        case running = "运行"
+    }
+
     @Published var bluetoothState = "正在检测蓝牙…"
     @Published var connectionState = "未连接"
     @Published var discoveredName = ""
     @Published var rssi = ""
     @Published var rows: [CharacteristicRow] = []
     @Published var selectedID = ""
+    @Published private(set) var canSend = false
+    @Published var waterOutput: Int?
+    @Published var fanOutput: Int?
     @Published var confirmedWater: Int?
     @Published var confirmedFan: Int?
-    @Published var runningWater: Int?
-    @Published var runningFan: Int?
+    @Published var waterDemand: Int?
+    @Published var fanDemand: Int?
+    @Published var operatingState: OperatingState = .unknown
     @Published var requestedWater: Int?
     @Published var requestedFan: Int?
     @Published var statusMessage = "正在连接散热器。"
     @Published var log: [String] = []
     @Published var samples: [PowerSample] = []
+    @Published var notificationCount = 0
+    @Published var disconnectCount = 0
+    @Published var reconnectCount = 0
+    @Published var longestNotificationGap: TimeInterval = 0
+    @Published var lastNotificationAt: Date?
     @Published var autoReconnect = UserDefaults.standard.object(forKey: "autoReconnect") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoReconnect, forKey: "autoReconnect") }
     }
@@ -44,6 +59,7 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     private var scanning = false
     private var scanGeneration = 0
     private var wantsConnection = true
+    private var hasConnectedOnce = false
 
     override init() {
         super.init()
@@ -52,7 +68,6 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     }
 
     var isConnected: Bool { peripheral?.state == .connected }
-    var canSend: Bool { isConnected && characteristics[selectedID] != nil }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
@@ -91,10 +106,14 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         rows = []
         characteristics = [:]
         selectedID = ""
+        canSend = false
+        waterOutput = nil
+        fanOutput = nil
         confirmedWater = nil
         confirmedFan = nil
-        runningWater = nil
-        runningFan = nil
+        waterDemand = nil
+        fanDemand = nil
+        operatingState = .unknown
         samples = []
         requestedWater = nil
         requestedFan = nil
@@ -138,6 +157,8 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        if hasConnectedOnce { reconnectCount += 1 }
+        hasConnectedOnce = true
         connectionState = "已连接 · 正在读取服务"
         statusMessage = "已连接。正在读取 BLE 服务和特征。"
         note("连接成功")
@@ -153,8 +174,10 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                         error: Error?) {
+        disconnectCount += 1
         connectionState = "连接已断开"
         characteristics = [:]
+        canSend = false
         note("设备断开：\(error?.localizedDescription ?? "正常断开")")
         scheduleReconnect()
     }
@@ -199,6 +222,7 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
             if service.uuid == DragonKProtocol.serviceUUID &&
                characteristic.uuid == DragonKProtocol.writeUUID && writable {
                 selectedID = id
+                canSend = true
             }
             if props.contains(.read) { peripheral.readValue(for: characteristic) }
             if props.contains(.notify) || props.contains(.indicate) {
@@ -215,6 +239,12 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         let id = "\(characteristic.service?.uuid.uuidString ?? "")/\(characteristic.uuid.uuidString)"
         if let error { note("读取 \(id) 失败：\(error.localizedDescription)"); return }
         let data = characteristic.value ?? Data()
+        let now = Date()
+        if let lastNotificationAt {
+            longestNotificationGap = max(longestNotificationGap, now.timeIntervalSince(lastNotificationAt))
+        }
+        lastNotificationAt = now
+        notificationCount += 1
         let value = data.hex
         if let index = rows.firstIndex(where: { $0.id == id }) {
             let old = rows[index]
@@ -225,17 +255,20 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         if characteristic.uuid == DragonKProtocol.notifyUUID,
            let feedback = DragonKProtocol.feedback(from: data) {
             switch feedback {
-            case let .water(target, running):
+            case let .water(target, output, demand):
                 confirmedWater = target
-                runningWater = running
-                appendSample("水泵", value: running)
-            case let .fan(target, running):
+                waterOutput = output
+                waterDemand = demand
+                appendSample("水泵", value: output)
+            case let .fan(target, output, demand):
                 confirmedFan = target
-                runningFan = running
-                appendSample("风扇", value: running)
+                fanOutput = output
+                fanDemand = demand
+                appendSample("风扇", value: output)
             }
+            updateOperatingState()
             if let requestedWater, let requestedFan,
-               confirmedWater == requestedWater && confirmedFan == requestedFan {
+               confirmedWater == requestedWater, confirmedFan == requestedFan {
                 statusMessage = "设备已确认水泵 \(requestedWater)%、风扇 \(requestedFan)% 的目标值。"
             }
         }
@@ -254,6 +287,15 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
 
     func sendLevel(_ level: Int) {
         sendTargets(water: level, fan: level)
+    }
+
+    func enterStandby() {
+        sendTargets(water: 42, fan: 42)
+        statusMessage = "已请求待机（设备安全最低档 42/42），等待设备确认…"
+    }
+
+    func startRunning(water: Int, fan: Int) {
+        sendTargets(water: water, fan: fan)
     }
 
     func sendTargets(water: Int, fan: Int) {
@@ -276,6 +318,16 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         requestedFan = fan
         statusMessage = "已发送水泵 \(water)%、风扇 \(fan)% 目标值，等待设备反馈…"
         note("发送水泵 \(water)%、风扇 \(fan)% → \(selectedID)：\(data.hex)")
+    }
+
+    private func updateOperatingState() {
+        guard let confirmedWater, let confirmedFan else {
+            operatingState = .unknown
+            return
+        }
+        // The official app labels the real device as standby at its 42/42
+        // safety floor. Values above that floor are its running state.
+        operatingState = confirmedWater > 42 || confirmedFan > 42 ? .running : .standby
     }
 
     func copyDiagnostics() {

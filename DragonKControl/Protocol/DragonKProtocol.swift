@@ -8,8 +8,8 @@ enum DragonKProtocol {
     static let notifyUUID = CBUUID(string: "AE02")
 
     enum Feedback {
-        case water(target: Int, running: Int)
-        case fan(target: Int, running: Int)
+        case water(target: Int, output: Int, demand: Int)
+        case fan(target: Int, output: Int, demand: Int)
     }
 
     static func setTargetsPacket(water: Int, fan: Int) -> Data? {
@@ -26,8 +26,11 @@ enum DragonKProtocol {
     static func feedback(from data: Data) -> Feedback? {
         guard data.count >= 17 else { return nil }
         switch data[0] {
-        case 0x4F: return .water(target: Int(data[16]), running: Int(data[7]))
-        case 0x49: return .fan(target: Int(data[12]), running: Int(data[7]))
+        // Device traces and the official UI show byte 7 as the current output.
+        // A zero value is valid while the controller's own thermal policy pauses
+        // one channel. The demand fields distinguish that from full standby.
+        case 0x4F: return .water(target: Int(data[17]), output: Int(data[7]), demand: Int(data[9]))
+        case 0x49: return .fan(target: Int(data[12]), output: Int(data[7]), demand: Int(data[6]))
         default: return nil
         }
     }
