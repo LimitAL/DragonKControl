@@ -38,9 +38,23 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     @Published var confirmedFan: Int?
     @Published var waterDemand: Int?
     @Published var fanDemand: Int?
+    @Published var leftCondensationTemperature: Int?
+    @Published var rightCondensationTemperature: Int?
+    @Published var environmentTemperature: Int?
+    @Published var waterTemperature: Int?
+    @Published var setTemperature: Int?
+    @Published var coldCoreA: Int?
+    @Published var coldCoreB: Int?
+    @Published var coldCoreC: Int?
+    @Published var telemetryPumpPower: Int?
+    @Published var telemetryFanPower: Int?
+    @Published var machineType: Int?
     @Published var operatingState: OperatingState = .unknown
-    @Published var requestedWater: Int?
-    @Published var requestedFan: Int?
+    @Published private(set) var controlMode = CoolerManager.savedControlMode()
+    @Published private(set) var profileSettings = CoolerManager.savedProfiles()
+    @Published private(set) var deviceProfileReadback: [DragonKControlMode: DragonKProfileSettings] = [:]
+    @Published private(set) var requestedWater: Int? = CoolerManager.savedTarget(forKey: "desiredWater")
+    @Published private(set) var requestedFan: Int? = CoolerManager.savedTarget(forKey: "desiredFan")
     @Published var statusMessage = "正在连接散热器。"
     @Published var log: [String] = []
     @Published var samples: [PowerSample] = []
@@ -49,6 +63,8 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     @Published var reconnectCount = 0
     @Published var longestNotificationGap: TimeInterval = 0
     @Published var lastNotificationAt: Date?
+    @Published var controlRefreshCount = 0
+    @Published var protocolQueryCount = 0
     @Published var autoReconnect = UserDefaults.standard.object(forKey: "autoReconnect") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoReconnect, forKey: "autoReconnect") }
     }
@@ -60,6 +76,40 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     private var scanGeneration = 0
     private var wantsConnection = true
     private var hasConnectedOnce = false
+    private var restoringAfterReconnect = false
+    private var notificationReady = false
+    private var didHandshakeThisConnection = false
+    private var handshakeGeneration = 0
+    private var controlTimer: Timer?
+    private let controlInterval: TimeInterval = 1.5
+#if DEBUG
+    private var didScheduleDebugDisconnect = false
+#endif
+
+    private static func savedTarget(forKey key: String) -> Int {
+        let value = UserDefaults.standard.integer(forKey: key)
+        return (42...100).contains(value) ? value : 42
+    }
+
+    private static func savedControlMode() -> DragonKControlMode {
+        guard let raw = UserDefaults.standard.string(forKey: "controlMode"),
+              let mode = DragonKControlMode(rawValue: raw) else { return .document }
+        return mode
+    }
+
+    private static func savedProfiles() -> [DragonKControlMode: DragonKProfileSettings] {
+        var profiles: [DragonKControlMode: DragonKProfileSettings] = [:]
+        for mode in [DragonKControlMode.document, .entertainment, .expert] {
+            let key = "profile.\(mode.rawValue)"
+            if let data = UserDefaults.standard.data(forKey: key),
+               let stored = try? JSONDecoder().decode(DragonKProfileSettings.self, from: data) {
+                profiles[mode] = stored.normalized()
+            } else {
+                profiles[mode] = .defaults(for: mode)
+            }
+        }
+        return profiles
+    }
 
     override init() {
         super.init()
@@ -113,10 +163,19 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         confirmedFan = nil
         waterDemand = nil
         fanDemand = nil
+        leftCondensationTemperature = nil
+        rightCondensationTemperature = nil
+        environmentTemperature = nil
+        waterTemperature = nil
+        setTemperature = nil
+        coldCoreA = nil
+        coldCoreB = nil
+        coldCoreC = nil
+        telemetryPumpPower = nil
+        telemetryFanPower = nil
+        machineType = nil
         operatingState = .unknown
         samples = []
-        requestedWater = nil
-        requestedFan = nil
         connectionState = "正在扫描…"
         scanning = true
         central.scanForPeripherals(withServices: nil,
@@ -135,6 +194,8 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
 
     func disconnect() {
         wantsConnection = false
+        stopControlLoop()
+        handshakeGeneration += 1
         scanGeneration += 1
         if let peripheral { central.cancelPeripheralConnection(peripheral) }
         if scanning { central.stopScan(); scanning = false }
@@ -157,12 +218,19 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        if hasConnectedOnce { reconnectCount += 1 }
+        restoringAfterReconnect = hasConnectedOnce
+        if restoringAfterReconnect { reconnectCount += 1 }
         hasConnectedOnce = true
+        notificationReady = false
+        didHandshakeThisConnection = false
+        handshakeGeneration += 1
         connectionState = "已连接 · 正在读取服务"
         statusMessage = "已连接。正在读取 BLE 服务和特征。"
         note("连接成功")
         peripheral.discoverServices(nil)
+#if DEBUG
+        scheduleDebugDisconnectIfRequested(peripheral)
+#endif
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -175,6 +243,8 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                         error: Error?) {
         disconnectCount += 1
+        stopControlLoop()
+        handshakeGeneration += 1
         connectionState = "连接已断开"
         characteristics = [:]
         canSend = false
@@ -223,6 +293,7 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
                characteristic.uuid == DragonKProtocol.writeUUID && writable {
                 selectedID = id
                 canSend = true
+                activateProtocolIfReady()
             }
             if props.contains(.read) { peripheral.readValue(for: characteristic) }
             if props.contains(.notify) || props.contains(.indicate) {
@@ -232,6 +303,20 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         connectionState = "已连接"
         statusMessage = selectedID.isEmpty ? "未找到官方协议的 AE00 / AE01 写入特征。" :
             "已识别官方协议，可以调节水泵与风扇目标值。"
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                    didUpdateNotificationStateFor characteristic: CBCharacteristic,
+                    error: Error?) {
+        if let error {
+            note("订阅 \(characteristic.uuid.uuidString) 失败：\(error.localizedDescription)")
+            return
+        }
+        guard characteristic.uuid == DragonKProtocol.notifyUUID,
+              characteristic.isNotifying else { return }
+        notificationReady = true
+        note("AE02 实时通知已启用")
+        activateProtocolIfReady()
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic,
@@ -265,9 +350,36 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
                 fanOutput = output
                 fanDemand = demand
                 appendSample("风扇", value: output)
+            case let .telemetry(telemetry):
+                machineType = telemetry.machineType
+                leftCondensationTemperature = telemetry.leftCondensationTemperature
+                rightCondensationTemperature = telemetry.rightCondensationTemperature
+                environmentTemperature = telemetry.environmentTemperature
+                waterTemperature = telemetry.waterTemperature
+                coldCoreA = telemetry.coldCoreA
+                coldCoreB = telemetry.coldCoreB
+                coldCoreC = telemetry.coldCoreC
+                telemetryPumpPower = telemetry.pumpPower
+                telemetryFanPower = telemetry.fanPower
+                if controlMode != .manual,
+                   let settings = profileSettings[controlMode] {
+                    switch settings.control {
+                    case .temperatureDifference:
+                        setTemperature = telemetry.environmentTemperature - settings.controlValue
+                    case .temperature:
+                        setTemperature = settings.controlValue
+                    case .power:
+                        setTemperature = nil
+                    }
+                    statusMessage = "设备正在\(controlMode.title)运行；已收到 C0 实时状态。"
+                }
+            case let .profile(mode, settings):
+                deviceProfileReadback[mode] = settings
+                note("设备回报\(mode.title)配置：\(profileSummary(mode, settings: settings))")
             }
             updateOperatingState()
-            if let requestedWater, let requestedFan,
+            if controlMode == .manual,
+               let requestedWater, let requestedFan,
                confirmedWater == requestedWater, confirmedFan == requestedFan {
                 statusMessage = "设备已确认水泵 \(requestedWater)%、风扇 \(requestedFan)% 的目标值。"
             }
@@ -289,6 +401,31 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         sendTargets(water: level, fan: level)
     }
 
+    func applyProfile(_ mode: DragonKControlMode) {
+        guard mode != .manual else { return }
+        controlMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "controlMode")
+        writeActiveConfiguration(reason: "用户切换到\(mode.title)", announce: true)
+        startControlLoop(restoring: false, sendImmediately: false)
+        updateOperatingState()
+    }
+
+    func settings(for mode: DragonKControlMode) -> DragonKProfileSettings {
+        profileSettings[mode] ?? .defaults(for: mode)
+    }
+
+    func updateProfile(_ mode: DragonKControlMode,
+                       _ update: (inout DragonKProfileSettings) -> Void) {
+        guard mode != .manual else { return }
+        var settings = self.settings(for: mode)
+        update(&settings)
+        settings = settings.normalized()
+        profileSettings[mode] = settings
+        if let data = try? JSONEncoder().encode(settings) {
+            UserDefaults.standard.set(data, forKey: "profile.\(mode.rawValue)")
+        }
+    }
+
     func enterStandby() {
         sendTargets(water: 42, fan: 42)
         statusMessage = "已请求待机（设备安全最低档 42/42），等待设备确认…"
@@ -299,28 +436,129 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     }
 
     func sendTargets(water: Int, fan: Int) {
-        guard let data = DragonKProtocol.setTargetsPacket(water: water, fan: fan) else { return }
+        controlMode = .manual
+        UserDefaults.standard.set(controlMode.rawValue, forKey: "controlMode")
+        rememberTargets(water: water, fan: fan)
+        writeActiveConfiguration(reason: "用户设置固定输出", announce: true)
+        startControlLoop(restoring: false, sendImmediately: false)
+    }
+
+    private func writeActiveConfiguration(reason: String, announce: Bool) {
+        let data: Data?
+        let summary: String
+        switch controlMode {
+        case .document, .entertainment, .expert:
+            let settings = settings(for: controlMode)
+            data = DragonKProtocol.profilePacket(controlMode, settings: settings)
+            summary = profileSummary(controlMode, settings: settings)
+        case .manual:
+            guard let water = requestedWater, let fan = requestedFan else { return }
+            data = DragonKProtocol.setTargetsPacket(water: water, fan: fan)
+            summary = "固定输出：水泵 \(water)%、风扇 \(fan)%"
+        }
+        guard let data else { return }
+        guard writePacket(data, announceFailure: announce) else { return }
+        controlRefreshCount += 1
+        if announce {
+            statusMessage = "已发送\(summary)，等待设备反馈…"
+            note("\(reason)：\(summary) → \(selectedID)：\(data.hex)")
+        }
+    }
+
+    private func writePacket(_ data: Data, announceFailure: Bool) -> Bool {
         guard let peripheral, peripheral.state == .connected,
               let characteristic = characteristics[selectedID],
               let row = rows.first(where: { $0.id == selectedID }), row.writable else {
-            statusMessage = "请先连接设备；官方写入特征 AE01 尚未就绪。"
-            return
+            if announceFailure { statusMessage = "请先连接设备；官方写入特征 AE01 尚未就绪。" }
+            return false
         }
-        let props = characteristic.properties
-        let type: CBCharacteristicWriteType = props.contains(.write) ? .withResponse : .withoutResponse
+        let type: CBCharacteristicWriteType = characteristic.properties.contains(.write) ?
+            .withResponse : .withoutResponse
         let maxLength = peripheral.maximumWriteValueLength(for: type)
         guard data.count <= maxLength else {
-            statusMessage = "指令长 \(data.count) 字节，超过此特征的单次写入上限 \(maxLength) 字节。"
-            return
+            if announceFailure {
+                statusMessage = "指令长 \(data.count) 字节，超过此特征的单次写入上限 \(maxLength) 字节。"
+            }
+            return false
         }
         peripheral.writeValue(data, for: characteristic, type: type)
-        requestedWater = water
-        requestedFan = fan
-        statusMessage = "已发送水泵 \(water)%、风扇 \(fan)% 目标值，等待设备反馈…"
-        note("发送水泵 \(water)%、风扇 \(fan)% → \(selectedID)：\(data.hex)")
+        return true
     }
 
+    private func activateProtocolIfReady() {
+        guard canSend, notificationReady, !didHandshakeThisConnection else { return }
+        didHandshakeThisConnection = true
+        let generation = handshakeGeneration
+        for (index, packet) in DragonKProtocol.connectionHandshakePackets.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.15) { [weak self] in
+                guard let self, self.handshakeGeneration == generation, self.canSend else { return }
+                if self.writePacket(packet, announceFailure: false) {
+                    self.protocolQueryCount += 1
+                    self.note("连接协议查询：\(packet.hex)")
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            guard let self, self.handshakeGeneration == generation, self.canSend else { return }
+            self.startControlLoop(restoring: self.restoringAfterReconnect)
+        }
+    }
+
+    private func profileSummary(_ mode: DragonKControlMode,
+                                settings: DragonKProfileSettings) -> String {
+        "\(mode.title)：\(settings.control.title) \(settings.controlValue)，水泵 \(settings.pumpFixed)，风扇自动 \(settings.fanMinimum)–\(settings.fanMaximum)，曲线 \(settings.fanCurve)"
+    }
+
+    private func rememberTargets(water: Int, fan: Int) {
+        requestedWater = water
+        requestedFan = fan
+        UserDefaults.standard.set(water, forKey: "desiredWater")
+        UserDefaults.standard.set(fan, forKey: "desiredFan")
+    }
+
+    private func startControlLoop(restoring: Bool, sendImmediately: Bool = true) {
+        stopControlLoop()
+        guard canSend else { return }
+        if sendImmediately {
+            writeActiveConfiguration(reason: restoring ? "重连恢复配置" : "恢复保存配置",
+                                     announce: true)
+        }
+        guard controlMode == .manual else {
+            note("官方温控模式仅在切换或重连后写入一次，避免重复初始化设备调度器")
+            return
+        }
+        controlTimer = Timer.scheduledTimer(withTimeInterval: controlInterval, repeats: true) { [weak self] _ in
+            guard let self, self.canSend else { return }
+            self.writeActiveConfiguration(reason: "配置保活", announce: false)
+        }
+        note("已启动配置保活，每 \(controlInterval) 秒刷新一次")
+    }
+
+    private func stopControlLoop() {
+        controlTimer?.invalidate()
+        controlTimer = nil
+    }
+
+#if DEBUG
+    private func scheduleDebugDisconnectIfRequested(_ peripheral: CBPeripheral) {
+        guard !didScheduleDebugDisconnect,
+              let raw = ProcessInfo.processInfo.environment["DRAGONK_TEST_DISCONNECT_AFTER"],
+              let delay = TimeInterval(raw), delay > 0 else { return }
+        didScheduleDebugDisconnect = true
+        note("调试：将在 \(delay) 秒后模拟意外断开")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak peripheral] in
+            guard let self, let peripheral, peripheral.state == .connected else { return }
+            self.note("调试：触发一次 CoreBluetooth 连接中断")
+            self.central.cancelPeripheralConnection(peripheral)
+        }
+    }
+#endif
+
     private func updateOperatingState() {
+        if controlMode != .manual {
+            operatingState = .running
+            return
+        }
         guard let confirmedWater, let confirmedFan else {
             operatingState = .unknown
             return

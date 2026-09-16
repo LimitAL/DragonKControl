@@ -5,6 +5,7 @@ struct MainView: View {
     @StateObject private var manager = CoolerManager()
     @State private var waterLevel = 70.0
     @State private var fanLevel = 70.0
+    @State private var editingProfile = DragonKControlMode.document
 
     var body: some View {
         ScrollView {
@@ -39,61 +40,103 @@ struct MainView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                 }
 
-                GroupBox("散热强度") {
+                GroupBox("官方温控模式") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("水泵与风扇可以分别设定目标值。设备会根据自身温控策略调整实时输出。")
+                        Text("默认三档沿用官方温差调度：水泵保持 42，风扇按 20–50 的线性曲线自动调整。专家模式提高温差目标，并不直接提高转速；每档参数可在下方独立修改。")
                             .font(.callout).foregroundStyle(.secondary)
                         HStack(spacing: 12) {
-                            Button {
-                                waterLevel = 42
-                                fanLevel = 42
-                                manager.enterStandby()
-                            } label: {
-                                Label("进入待机 · 42/42", systemImage: "pause.circle.fill")
-                            }
-                            Button {
-                                manager.startRunning(water: Int(waterLevel), fan: Int(fanLevel))
-                            } label: {
-                                Label("运行 · 应用当前设定", systemImage: "play.circle.fill")
-                            }
+                            profileButton(.document, symbol: "doc.text")
+                            profileButton(.entertainment, symbol: "play.rectangle")
+                            profileButton(.expert, symbol: "gauge.with.dots.needle.67percent")
                         }
-                        .disabled(!manager.canSend)
-                        HStack(spacing: 12) {
-                            presetButton("低", level: 42, symbol: "fanblades")
-                            presetButton("中", level: 70, symbol: "fanblades.fill")
-                            presetButton("高", level: 100, symbol: "wind")
+                        Text("当前控制：\(manager.controlMode.title)")
+                            .font(.headline)
+                        DisclosureGroup("自定义三档参数") {
+                            profileConfigurationEditor
+                                .padding(.top, 8)
                         }
-                        targetSlider("水泵", value: $waterLevel)
-                        targetSlider("风扇", value: $fanLevel)
-                        Button("分别应用") {
-                            manager.sendTargets(water: Int(waterLevel), fan: Int(fanLevel))
-                        }.disabled(!manager.canSend)
+                        DisclosureGroup("高级固定输出（0x84 原始控制）") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("固定输出会绕过官方三档曲线。较高数值会显著提高水泵流量和风扇噪音。")
+                                    .font(.caption).foregroundStyle(.orange)
+                                HStack(spacing: 12) {
+                                    Button {
+                                        waterLevel = 42
+                                        fanLevel = 42
+                                        manager.enterStandby()
+                                    } label: {
+                                        Label("待机 · 42/42", systemImage: "pause.circle.fill")
+                                    }
+                                    Button {
+                                        manager.startRunning(water: Int(waterLevel), fan: Int(fanLevel))
+                                    } label: {
+                                        Label("应用固定输出", systemImage: "slider.horizontal.3")
+                                    }
+                                }
+                                .disabled(!manager.canSend)
+                                targetSlider("水泵", value: $waterLevel)
+                                targetSlider("风扇", value: $fanLevel)
+                            }.padding(.top, 8)
+                        }
                         HStack(spacing: 22) {
                             feedback("水泵", target: manager.requestedWater, confirmed: manager.confirmedWater, output: manager.waterOutput,
                                      demand: manager.waterDemand)
                             feedback("风扇", target: manager.requestedFan, confirmed: manager.confirmedFan, output: manager.fanOutput,
                                      demand: manager.fanDemand)
                         }
+                        Text("49/4F 回报的是控制器内部通道值；设备当前实际水泵与风扇功率以“实时温度与冷核功率”中的 C0 数据为准。")
+                            .font(.caption).foregroundStyle(.secondary)
                         Text(manager.statusMessage).font(.callout).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }.padding(6)
                 }
 
-                GroupBox("运行趋势") {
+                GroupBox("实时温度与冷核功率") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 9) {
+                            GridRow {
+                                telemetryValue("左冷凝面", manager.leftCondensationTemperature, suffix: "℃")
+                                telemetryValue("右冷凝面", manager.rightCondensationTemperature, suffix: "℃")
+                                telemetryValue("设定温度", manager.setTemperature, suffix: "℃")
+                            }
+                            GridRow {
+                                telemetryValue("环境温度", manager.environmentTemperature, suffix: "℃")
+                                telemetryValue("水温", manager.waterTemperature, suffix: "℃")
+                                telemetryValue("设备类型", manager.machineType, suffix: "")
+                            }
+                            GridRow {
+                                telemetryValue("冷核 A", manager.coldCoreA, suffix: "%")
+                                telemetryValue("冷核 B", manager.coldCoreB, suffix: "%")
+                                telemetryValue("冷核 C", manager.coldCoreC, suffix: "%")
+                            }
+                            GridRow {
+                                telemetryValue("水泵功率", manager.telemetryPumpPower, suffix: "%")
+                                telemetryValue("风扇功率", manager.telemetryFanPower, suffix: "%")
+                                Color.clear.frame(height: 1)
+                            }
+                        }
+                        Text("数据来自设备 C0 实时帧；字段位置与厂商源码页面及 49/4F 回报交叉对齐。温差模式的设定温度按环境温度减目标温差计算。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                }
+
+                GroupBox("内部控制趋势") {
                     VStack(alignment: .leading, spacing: 10) {
                         if manager.samples.isEmpty {
-                            Text("连接后将在这里显示水泵与风扇的设备输出。")
+                            Text("连接后将在这里显示 49/4F 控制器通道值。")
                                 .foregroundStyle(.secondary)
                         } else {
                             Chart(manager.samples) { sample in
                                 LineMark(x: .value("时间", sample.timestamp),
-                                         y: .value("设备输出", sample.value))
+                                         y: .value("内部通道值", sample.value))
                                     .foregroundStyle(by: .value("通道", sample.channel))
                             }
                             .chartYScale(domain: 0...100)
                             .frame(height: 175)
                         }
-                        Text("数值来自设备通知。控制器会按温控策略暂停某一路，因此运行时单路输出为 0 属于有效状态；数值尚未校准为 RPM。")
+                        Text("数值来自 49/4F 通知，用于观察控制器内部调度，不等同于物理水泵或风扇功率。实际功率显示在上方 C0 实时数据中。")
                             .font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                 }
@@ -112,10 +155,14 @@ struct MainView: View {
                         metric("通知", "\(manager.notificationCount)")
                         metric("断开", "\(manager.disconnectCount)")
                         metric("自动恢复", "\(manager.reconnectCount)")
+                        metric("配置刷新", "\(manager.controlRefreshCount)")
+                        metric("协议查询", "\(manager.protocolQueryCount)")
                         metric("最长通知间隔", String(format: "%.1f 秒", manager.longestNotificationGap))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
+                    Text("最后一次设定保存在本机；固定输出每 1.5 秒刷新，官方温控模式只在切换或重连时写入。")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 6).padding(.bottom, 6)
                 }
 
                 GroupBox("BLE 特征与诊断") {
@@ -140,18 +187,106 @@ struct MainView: View {
             .padding(26)
         }
         .frame(minWidth: 640, minHeight: 650)
+        .onAppear {
+            waterLevel = Double(manager.requestedWater ?? 70)
+            fanLevel = Double(manager.requestedFan ?? 70)
+        }
     }
 
-    private func presetButton(_ title: String, level: Int, symbol: String) -> some View {
-        Button {
-            waterLevel = Double(level)
-            fanLevel = Double(level)
-            manager.sendLevel(level)
+    private func profileButton(_ mode: DragonKControlMode, symbol: String) -> some View {
+        let settings = manager.settings(for: mode)
+        return Button {
+            manager.applyProfile(mode)
         } label: {
-            Label("\(title)档 · \(level)%", systemImage: symbol)
-                .frame(maxWidth: .infinity).padding(.vertical, 9)
+            VStack(spacing: 4) {
+                Label(mode.title, systemImage: symbol)
+                Text("\(settings.control.title) \(settings.controlValue) · 泵 \(settings.pumpFixed) · 风扇 \(settings.fanMinimum)–\(settings.fanMaximum)")
+                    .font(.caption)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 7)
         }
+        .buttonStyle(.bordered)
+        .tint(manager.controlMode == mode ? .accentColor : .secondary)
         .disabled(!manager.canSend)
+    }
+
+    private var profileConfigurationEditor: some View {
+        let settings = manager.settings(for: editingProfile)
+        return VStack(alignment: .leading, spacing: 11) {
+            Picker("配置", selection: $editingProfile) {
+                Text("文档").tag(DragonKControlMode.document)
+                Text("娱乐").tag(DragonKControlMode.entertainment)
+                Text("专家").tag(DragonKControlMode.expert)
+            }
+            .pickerStyle(.segmented)
+
+            Picker("控制方式", selection: profileControlBinding(editingProfile)) {
+                ForEach(DragonKCoolingControl.allCases) { control in
+                    Text(control.title).tag(control)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Stepper("\(settings.control.valueLabel)：\(settings.controlValue)\(settings.control == .power ? "%" : "℃")",
+                    value: profileIntBinding(editingProfile, \.controlValue),
+                    in: settings.control.allowedValues)
+            profileSlider("水泵固定值", value: profileIntBinding(editingProfile, \.pumpFixed), range: 42...100)
+            profileSlider("风扇最小值", value: profileIntBinding(editingProfile, \.fanMinimum), range: 0...100)
+            profileSlider("风扇最大值", value: profileIntBinding(editingProfile, \.fanMaximum), range: 0...100)
+            Stepper("风扇曲线系数：\(settings.fanCurve)",
+                    value: profileIntBinding(editingProfile, \.fanCurve), in: 0...500, step: 5)
+
+            HStack {
+                Button("应用 \(editingProfile.title)") {
+                    manager.applyProfile(editingProfile)
+                }
+                .disabled(!manager.canSend)
+                if let readback = manager.deviceProfileReadback[editingProfile] {
+                    Text("设备已读回：\(readback.control.title) \(readback.controlValue)，泵 \(readback.pumpFixed)，风扇 \(readback.fanMinimum)–\(readback.fanMaximum)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func profileControlBinding(_ mode: DragonKControlMode) -> Binding<DragonKCoolingControl> {
+        Binding {
+            manager.settings(for: mode).control
+        } set: { value in
+            manager.updateProfile(mode) {
+                $0.control = value
+                $0.controlValue = min(max($0.controlValue, value.allowedValues.lowerBound),
+                                      value.allowedValues.upperBound)
+            }
+        }
+    }
+
+    private func profileIntBinding(_ mode: DragonKControlMode,
+                                   _ keyPath: WritableKeyPath<DragonKProfileSettings, Int>) -> Binding<Int> {
+        Binding {
+            manager.settings(for: mode)[keyPath: keyPath]
+        } set: { value in
+            manager.updateProfile(mode) { $0[keyPath: keyPath] = value }
+        }
+    }
+
+    private func profileSlider(_ title: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
+        HStack {
+            Text(title).frame(width: 96, alignment: .leading)
+            Slider(value: Binding(get: { Double(value.wrappedValue) },
+                                  set: { value.wrappedValue = Int($0) }),
+                   in: Double(range.lowerBound)...Double(range.upperBound), step: 1)
+            Text("\(value.wrappedValue)%").font(.body.monospacedDigit()).frame(width: 46)
+        }
+    }
+
+    private func telemetryValue(_ title: String, _ value: Int?, suffix: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value.map { "\($0)\(suffix)" } ?? "—")
+                .font(.title3.monospacedDigit())
+        }
+        .frame(minWidth: 130, maxWidth: .infinity, alignment: .leading)
     }
 
     private func targetSlider(_ title: String, value: Binding<Double>) -> some View {
@@ -170,7 +305,7 @@ struct MainView: View {
                 .font(.headline)
             Text("设备目标：\(confirmed.map { "\($0)%" } ?? "—")")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("设备输出：\(output.map { "\($0)%" } ?? "—") · 调度：\(demand.map { "\($0)%" } ?? "—")")
+            Text("内部通道：\(output.map { "\($0)%" } ?? "—") · 内部调度：\(demand.map { "\($0)%" } ?? "—")")
                 .font(.callout).foregroundStyle(.secondary)
         }
     }
