@@ -1,46 +1,29 @@
-import AppKit
 import Charts
 import SwiftUI
-
-struct MenuBarLoadIcon: View {
-    let value: Int
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .strokeBorder(lineWidth: 1)
-            Text("\(value)%")
-                .font(.system(size: 9, weight: .bold, design: .rounded))
-                .monospacedDigit()
-        }
-        .frame(width: 34, height: 17)
-        .accessibilityLabel("DragonK 综合负载 \(value)%")
-    }
-}
 
 struct MenuBarPanel: View {
     @ObservedObject private var model: AppModel
     @ObservedObject private var manager: CoolerManager
     @ObservedObject private var hostMonitor: HostMonitor
-    @Environment(\.openWindow) private var openWindow
+    private let openMainWindow: () -> Void
 
-    init(model: AppModel) {
+    init(model: AppModel, openMainWindow: @escaping () -> Void) {
         self.model = model
         manager = model.manager
         hostMonitor = model.hostMonitor
+        self.openMainWindow = openMainWindow
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                loadHeader
-                hostSection
-                coolerSection
-                quickControls
-            }
-            .padding(14)
+        VStack(spacing: 12) {
+            loadHeader
+            hostSection
+            coolerSection
+            quickControls
         }
-        .frame(width: 370, height: 800)
+        .padding(14)
+        .frame(width: 370)
+        .fixedSize(horizontal: false, vertical: true)
         .background {
             LinearGradient(colors: [Color.indigo.opacity(0.22), Color.blue.opacity(0.06), .clear],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -154,8 +137,7 @@ struct MenuBarPanel: View {
 
             HStack(spacing: 8) {
                 Button {
-                    openWindow(id: "main")
-                    NSApp.activate(ignoringOtherApps: true)
+                    openMainWindow()
                 } label: {
                     Label("打开主窗口", systemImage: "macwindow")
                         .frame(maxWidth: .infinity)

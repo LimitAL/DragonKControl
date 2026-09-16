@@ -2,19 +2,13 @@ import SwiftUI
 
 @main
 struct DragonKControlApp: App {
-    @StateObject private var model = AppModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup("DragonK Control", id: "main") {
-            MainView(model: model)
+            MainView(model: appDelegate.model)
+                .background(AppLifecycleBridge(appDelegate: appDelegate))
         }
             .defaultSize(width: 1160, height: 900)
-
-        MenuBarExtra {
-            MenuBarPanel(model: model)
-        } label: {
-            MenuBarLoadIcon(value: model.loadPercentage)
-        }
-        .menuBarExtraStyle(.window)
     }
 }

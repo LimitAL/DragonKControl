@@ -2,6 +2,8 @@
 
 正式的 macOS SwiftUI/Xcode App 项目，控制 BLE 设备 `DragonK-XAR1500236`。打开 `DragonKControl.xcodeproj`，选择共享 scheme `DragonKControl` 和 `My Mac`，在 Xcode 中 Build/Run。项目最低支持 macOS 13，蓝牙用途说明及蓝牙 entitlement 已配置。
 
+1.9 将状态栏升级为带 DragonK 雪花标识的原生菜单栏项目：左键打开按内容自适应高度的监控浮窗，右键显示当前综合负载和“退出 DragonK Control”。关闭主窗口只会切换为后台菜单栏模式并从 Dock 隐藏，传感器采样、智能切换、蓝牙连接和自动重连继续运行；浮窗中的“打开主窗口”会恢复窗口与 Dock 图标。只有右键退出、⌘Q 或系统终止操作才会真正结束程序。
+
 1.8 新增常驻菜单栏的综合负载百分比。点击数字胶囊会打开浮动面板，直接查看最近 3 分钟负载趋势、本机 CPU 封装功率、整机功率、CPU 温度、Mac 风扇，以及 DragonK 冷凝面、水温、冷核、水泵和设备风扇状态；面板同时提供智能切换、三档快捷切换、打开主窗口和重新扫描。菜单栏、浮动面板和主窗口共享同一套蓝牙连接与监控状态，不会重复创建连接。
 
 综合负载不是 macOS CPU 占用率。它会将当前可用的 CPU 封装功率、CPU 温度、Mac 风扇、冷核最高功率、水泵功率和设备风扇功率按 30%/25%/15%/12%/8%/10% 加权后归一化为 0–100；缺失项目会从权重中剔除。主页面顶部也会显示同一个负载值。
@@ -14,7 +16,7 @@
 
 连接流程会先启用 `AE02` 通知，再按官方顺序发送 `4E 00 01 01` 以及 `81/82/83 00 00` 状态查询，读取设备内三档配置，随后恢复最后一次模式。实时页面解析设备 `C0` 帧，显示左右冷凝面、设定温度、环境温度、水温、三路冷核功率以及物理水泵与风扇功率；`49/4F` 帧显示目标和控制器内部通道/调度值。内部控制趋势图保留最近 240 个样本。最后一次模式、三档参数或固定目标都会保存在本机，意外重连后立即恢复。手动断开不会触发重连。
 
-代码按职责组织：`AppModel.swift` 负责共享应用生命周期与综合负载计算；`Bluetooth/CoolerManager.swift` 负责扫描、连接、GATT、智能策略和日志；`Protocol/DragonKProtocol.swift` 负责官方 20 字节控制包及设备回报解析；`System/HostMonitor.swift` 负责 HID/AppleSMC 本机传感器采集；`UI/MainView.swift` 和 `UI/MenuBarPanel.swift` 分别负责主窗口与菜单栏浮窗。`Resources` 中是蓝牙用途说明和 entitlement。
+代码按职责组织：`AppModel.swift` 负责共享监控状态与综合负载计算；`AppLifecycle.swift` 负责原生状态栏、左右键操作、主窗口和 Dock 生命周期；`Bluetooth/CoolerManager.swift` 负责扫描、连接、GATT、智能策略和日志；`Protocol/DragonKProtocol.swift` 负责官方 20 字节控制包及设备回报解析；`System/HostMonitor.swift` 负责 HID/AppleSMC 本机传感器采集；`UI/MainView.swift` 和 `UI/MenuBarPanel.swift` 分别负责主窗口与菜单栏浮窗。`Resources` 中是蓝牙用途说明和 entitlement。
 
 协议来自本机安装的官方 DragonKing 1.2.0、官方实机写包，以及厂商微信小程序解包源码。实际设备测试确认：`AE00` 服务、`AE01` 写入、`AE02` 通知；`0x84` 控制包第 7 字节设置水泵目标，第 12 字节设置风扇目标。`4F[17]`、`49[12]` 确认水泵/风扇目标，`4F[7]/[9]`、`49[7]/[6]` 是控制器内部通道/调度值；实际物理水泵与风扇功率来自 `C0[13]/[14]`。
 
