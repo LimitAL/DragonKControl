@@ -198,7 +198,7 @@ struct MainView: View {
 
     private var hostLoadAndSmartControl: some View {
         DashboardCard(title: "本机负载与智能切换",
-                      subtitle: "每 2 秒采样并短时平滑，由 macOS 传感器驱动三档模式",
+                      subtitle: "主窗口约 10 秒、菜单栏后台约 30 秒采样并平滑",
                       symbol: "macbook.and.iphone",
                       tint: .indigo) {
             HStack(spacing: 12) {

@@ -45,13 +45,32 @@ final class HostMonitor: ObservableObject {
     private var timer: Timer?
     private var isSampling = false
     private var recentSamples: [HostSensorSnapshot] = []
+    private let smoothingWindow: TimeInterval = 30
+    private var isBackgroundMode = false
+
+    private var samplingInterval: TimeInterval { isBackgroundMode ? 30 : 10 }
 
     func start() {
         guard timer == nil else { return }
         sample()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        scheduleTimer()
+    }
+
+    func setBackgroundMode(_ enabled: Bool) {
+        guard isBackgroundMode != enabled else { return }
+        isBackgroundMode = enabled
+        timer?.invalidate()
+        timer = nil
+        scheduleTimer()
+        if !enabled { sample() }
+    }
+
+    private func scheduleTimer() {
+        let timer = Timer.scheduledTimer(withTimeInterval: samplingInterval, repeats: true) { [weak self] _ in
             self?.sample()
         }
+        timer.tolerance = isBackgroundMode ? 10 : 3
+        self.timer = timer
     }
 
     func stop() {
@@ -69,7 +88,7 @@ final class HostMonitor: ObservableObject {
                 let smoothed = self.smoothed(next)
                 self.snapshot = smoothed
                 let count = [smoothed.cpuPower, smoothed.cpuTemperature, smoothed.fanRPM].compactMap { $0 }.count
-                self.status = count == 3 ? "本机传感器实时采集中" :
+                self.status = count == 3 ? "本机传感器低频节能采集中" :
                     (count > 0 ? "部分传感器可用；不可用指标不会参与切档" : "本机未返回可用传感器")
                 self.isSampling = false
             }
@@ -78,7 +97,9 @@ final class HostMonitor: ObservableObject {
 
     private func smoothed(_ sample: HostSensorSnapshot) -> HostSensorSnapshot {
         recentSamples.append(sample)
-        recentSamples = recentSamples.filter { sample.sampledAt.timeIntervalSince($0.sampledAt) <= 6 }
+        recentSamples = recentSamples.filter {
+            sample.sampledAt.timeIntervalSince($0.sampledAt) <= smoothingWindow
+        }
 
         func average(_ values: [Double?]) -> Double? {
             let available = values.compactMap { $0 }
@@ -188,12 +209,21 @@ private func HIDEventGetFloatValue(_ event: HIDEvent, _ field: Int32) -> Double
 private func HIDServiceClientCopyProperty(_ service: HIDService, _ property: CFString) -> Unmanaged<AnyObject>?
 
 private final class HIDSensorReader {
-    func values(usagePage: Int, usage: Int, eventType: Int64, field: Int32) -> [HIDReading] {
-        guard let client = HIDEventSystemClientCreate(kCFAllocatorDefault) else { return [] }
-        defer { Unmanaged<AnyObject>.fromOpaque(client).release() }
+    private struct ClientKey: Hashable {
+        let usagePage: Int
+        let usage: Int
+    }
 
-        let matching = ["PrimaryUsagePage": usagePage, "PrimaryUsage": usage] as CFDictionary
-        HIDEventSystemClientSetMatching(client, matching)
+    private var clients: [ClientKey: HIDClient] = [:]
+
+    deinit {
+        for client in clients.values {
+            Unmanaged<AnyObject>.fromOpaque(client).release()
+        }
+    }
+
+    func values(usagePage: Int, usage: Int, eventType: Int64, field: Int32) -> [HIDReading] {
+        guard let client = client(usagePage: usagePage, usage: usage) else { return [] }
         guard let copied = HIDEventSystemClientCopyServices(client) else { return [] }
         let services = copied.takeRetainedValue()
 
@@ -208,6 +238,16 @@ private final class HIDSensorReader {
                 .takeRetainedValue() as? String ?? "sensor-\(index)"
             return HIDReading(name: name, value: value)
         }
+    }
+
+    private func client(usagePage: Int, usage: Int) -> HIDClient? {
+        let key = ClientKey(usagePage: usagePage, usage: usage)
+        if let client = clients[key] { return client }
+        guard let client = HIDEventSystemClientCreate(kCFAllocatorDefault) else { return nil }
+        let matching = ["PrimaryUsagePage": usagePage, "PrimaryUsage": usage] as CFDictionary
+        HIDEventSystemClientSetMatching(client, matching)
+        clients[key] = client
+        return client
     }
 }
 

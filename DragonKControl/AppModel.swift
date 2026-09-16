@@ -31,6 +31,7 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
 
         manager.objectWillChange
+            .throttle(for: .seconds(10), scheduler: RunLoop.main, latest: true)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 DispatchQueue.main.async {
@@ -42,6 +43,11 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
 
         hostMonitor.start()
+    }
+
+    func setBackgroundMode(_ enabled: Bool) {
+        hostMonitor.setBackgroundMode(enabled)
+        manager.setBackgroundMode(enabled)
     }
 
     deinit {

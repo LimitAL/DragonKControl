@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func openMainWindow() {
         mainWindowIsClosed = false
+        model.setBackgroundMode(false)
         NSApp.setActivationPolicy(.regular)
         if let mainWindow {
             mainWindow.makeKeyAndOrderFront(nil)
@@ -70,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationCenter.default.removeObserver(windowCloseObserver)
             self.windowCloseObserver = nil
         }
+        model.setBackgroundMode(true)
         NSApp.setActivationPolicy(.accessory)
     }
 }

@@ -32,23 +32,23 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     @Published var rows: [CharacteristicRow] = []
     @Published var selectedID = ""
     @Published private(set) var canSend = false
-    @Published var waterOutput: Int?
-    @Published var fanOutput: Int?
-    @Published var confirmedWater: Int?
-    @Published var confirmedFan: Int?
-    @Published var waterDemand: Int?
-    @Published var fanDemand: Int?
-    @Published var leftCondensationTemperature: Int?
-    @Published var rightCondensationTemperature: Int?
-    @Published var environmentTemperature: Int?
-    @Published var waterTemperature: Int?
-    @Published var setTemperature: Int?
-    @Published var coldCoreA: Int?
-    @Published var coldCoreB: Int?
-    @Published var coldCoreC: Int?
-    @Published var telemetryPumpPower: Int?
-    @Published var telemetryFanPower: Int?
-    @Published var machineType: Int?
+    private(set) var waterOutput: Int?
+    private(set) var fanOutput: Int?
+    private(set) var confirmedWater: Int?
+    private(set) var confirmedFan: Int?
+    private(set) var waterDemand: Int?
+    private(set) var fanDemand: Int?
+    private(set) var leftCondensationTemperature: Int?
+    private(set) var rightCondensationTemperature: Int?
+    private(set) var environmentTemperature: Int?
+    private(set) var waterTemperature: Int?
+    private(set) var setTemperature: Int?
+    private(set) var coldCoreA: Int?
+    private(set) var coldCoreB: Int?
+    private(set) var coldCoreC: Int?
+    private(set) var telemetryPumpPower: Int?
+    private(set) var telemetryFanPower: Int?
+    private(set) var machineType: Int?
     @Published var operatingState: OperatingState = .unknown
     @Published private(set) var controlMode = CoolerManager.savedControlMode()
     @Published private(set) var profileSettings = CoolerManager.savedProfiles()
@@ -58,11 +58,11 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     @Published var statusMessage = "正在连接散热器。"
     @Published var log: [String] = []
     @Published var samples: [PowerSample] = []
-    @Published var notificationCount = 0
+    private(set) var notificationCount = 0
     @Published var disconnectCount = 0
     @Published var reconnectCount = 0
-    @Published var longestNotificationGap: TimeInterval = 0
-    @Published var lastNotificationAt: Date?
+    private(set) var longestNotificationGap: TimeInterval = 0
+    private(set) var lastNotificationAt: Date?
     @Published var controlRefreshCount = 0
     @Published var protocolQueryCount = 0
     @Published var autoReconnect = UserDefaults.standard.object(forKey: "autoReconnect") as? Bool ?? true {
@@ -87,6 +87,24 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     private var controlTimer: Timer?
     private let controlInterval: TimeInterval = 1.5
     private let smartMinimumDwell: TimeInterval = 20
+    private struct ControllerFeedback {
+        let target: Int
+        let output: Int
+        let demand: Int
+    }
+
+    private var isBackgroundMode = false
+    private var displayPublishInterval: TimeInterval { isBackgroundMode ? 30 : 10 }
+    private var receivedNotificationCount = 0
+    private var receivedLongestNotificationGap: TimeInterval = 0
+    private var receivedLastNotificationAt: Date?
+    private var lastDiagnosticsPublishedAt = Date.distantPast
+    private var pendingWaterFeedback: ControllerFeedback?
+    private var pendingFanFeedback: ControllerFeedback?
+    private var pendingTelemetry: DragonKTelemetry?
+    private var displayPublishWorkItem: DispatchWorkItem?
+    private var lastDisplayPublishedAt = Date.distantPast
+    private var lastSampleAt: [String: Date] = [:]
 #if DEBUG
     private var didScheduleDebugDisconnect = false
 #endif
@@ -132,6 +150,14 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
 
     var isConnected: Bool { peripheral?.state == .connected }
 
+    func setBackgroundMode(_ enabled: Bool) {
+        guard isBackgroundMode != enabled else { return }
+        isBackgroundMode = enabled
+        displayPublishWorkItem?.cancel()
+        displayPublishWorkItem = nil
+        scheduleDisplayPublish()
+    }
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
@@ -161,6 +187,7 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
             return
         }
         guard !isConnected else { return }
+        clearPendingDisplay()
         wantsConnection = true
         if scanning { central.stopScan() }
         scanGeneration += 1
@@ -207,6 +234,7 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
 
     func disconnect() {
         wantsConnection = false
+        clearPendingDisplay()
         stopControlLoop()
         handshakeGeneration += 1
         scanGeneration += 1
@@ -256,6 +284,7 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                         error: Error?) {
         disconnectCount += 1
+        clearPendingDisplay()
         stopControlLoop()
         handshakeGeneration += 1
         connectionState = "连接已断开"
@@ -338,65 +367,168 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         if let error { note("读取 \(id) 失败：\(error.localizedDescription)"); return }
         let data = characteristic.value ?? Data()
         let now = Date()
-        if let lastNotificationAt {
-            longestNotificationGap = max(longestNotificationGap, now.timeIntervalSince(lastNotificationAt))
-        }
-        lastNotificationAt = now
-        notificationCount += 1
-        let value = data.hex
-        if let index = rows.firstIndex(where: { $0.id == id }) {
-            let old = rows[index]
-            rows[index] = CharacteristicRow(id: old.id, service: old.service, uuid: old.uuid,
-                properties: old.properties, value: value, writable: old.writable)
-        }
-        note("收到 \(id)：\(value)")
+        recordNotification(id: id, data: data, at: now)
         if characteristic.uuid == DragonKProtocol.notifyUUID,
            let feedback = DragonKProtocol.feedback(from: data) {
             switch feedback {
             case let .water(target, output, demand):
-                confirmedWater = target
-                waterOutput = output
-                waterDemand = demand
-                appendSample("水泵", value: output)
+                pendingWaterFeedback = ControllerFeedback(target: target,
+                                                          output: output,
+                                                          demand: demand)
+                scheduleDisplayPublish()
             case let .fan(target, output, demand):
-                confirmedFan = target
-                fanOutput = output
-                fanDemand = demand
-                appendSample("风扇", value: output)
+                pendingFanFeedback = ControllerFeedback(target: target,
+                                                        output: output,
+                                                        demand: demand)
+                scheduleDisplayPublish()
             case let .telemetry(telemetry):
-                machineType = telemetry.machineType
-                leftCondensationTemperature = telemetry.leftCondensationTemperature
-                rightCondensationTemperature = telemetry.rightCondensationTemperature
-                environmentTemperature = telemetry.environmentTemperature
-                waterTemperature = telemetry.waterTemperature
-                coldCoreA = telemetry.coldCoreA
-                coldCoreB = telemetry.coldCoreB
-                coldCoreC = telemetry.coldCoreC
-                telemetryPumpPower = telemetry.pumpPower
-                telemetryFanPower = telemetry.fanPower
-                if controlMode != .manual,
-                   let settings = profileSettings[controlMode] {
-                    switch settings.control {
-                    case .temperatureDifference:
-                        setTemperature = telemetry.environmentTemperature - settings.controlValue
-                    case .temperature:
-                        setTemperature = settings.controlValue
-                    case .power:
-                        setTemperature = nil
-                    }
-                    statusMessage = "设备正在\(controlMode.title)运行；已收到 C0 实时状态。"
-                }
+                pendingTelemetry = telemetry
+                scheduleDisplayPublish()
             case let .profile(mode, settings):
-                deviceProfileReadback[mode] = settings
-                note("设备回报\(mode.title)配置：\(profileSummary(mode, settings: settings))")
-            }
-            updateOperatingState()
-            if controlMode == .manual,
-               let requestedWater, let requestedFan,
-               confirmedWater == requestedWater, confirmedFan == requestedFan {
-                statusMessage = "设备已确认水泵 \(requestedWater)%、风扇 \(requestedFan)% 的目标值。"
+                if deviceProfileReadback[mode] != settings {
+                    deviceProfileReadback[mode] = settings
+                    note("设备回报\(mode.title)配置：\(profileSummary(mode, settings: settings))")
+                }
             }
         }
+    }
+
+    private func recordNotification(id: String, data: Data, at now: Date) {
+        if let receivedLastNotificationAt {
+            receivedLongestNotificationGap = max(
+                receivedLongestNotificationGap,
+                now.timeIntervalSince(receivedLastNotificationAt)
+            )
+        }
+        receivedLastNotificationAt = now
+        receivedNotificationCount += 1
+
+        guard now.timeIntervalSince(lastDiagnosticsPublishedAt) >= displayPublishInterval else { return }
+        lastDiagnosticsPublishedAt = now
+        objectWillChange.send()
+        notificationCount = receivedNotificationCount
+        longestNotificationGap = receivedLongestNotificationGap
+        lastNotificationAt = now
+
+        guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
+        let value = data.hex
+        let old = rows[index]
+        guard old.value != value else { return }
+        rows[index] = CharacteristicRow(id: old.id, service: old.service, uuid: old.uuid,
+            properties: old.properties, value: value, writable: old.writable)
+    }
+
+    private func scheduleDisplayPublish() {
+        guard pendingWaterFeedback != nil || pendingFanFeedback != nil || pendingTelemetry != nil else {
+            return
+        }
+        let elapsed = Date().timeIntervalSince(lastDisplayPublishedAt)
+        guard elapsed < displayPublishInterval else {
+            publishPendingDisplay()
+            return
+        }
+        guard displayPublishWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.publishPendingDisplay()
+        }
+        displayPublishWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + displayPublishInterval - elapsed,
+                                      execute: workItem)
+    }
+
+    private func publishPendingDisplay() {
+        displayPublishWorkItem = nil
+        let water = pendingWaterFeedback
+        let fan = pendingFanFeedback
+        let telemetry = pendingTelemetry
+        pendingWaterFeedback = nil
+        pendingFanFeedback = nil
+        pendingTelemetry = nil
+        lastDisplayPublishedAt = Date()
+
+        var nextSetTemperature = setTemperature
+        if let telemetry, controlMode != .manual,
+           let settings = profileSettings[controlMode] {
+            switch settings.control {
+            case .temperatureDifference:
+                nextSetTemperature = telemetry.environmentTemperature - settings.controlValue
+            case .temperature:
+                nextSetTemperature = settings.controlValue
+            case .power:
+                nextSetTemperature = nil
+            }
+        }
+
+        let waterChanged = water.map {
+            confirmedWater != $0.target || waterOutput != $0.output || waterDemand != $0.demand
+        } ?? false
+        let fanChanged = fan.map {
+            confirmedFan != $0.target || fanOutput != $0.output || fanDemand != $0.demand
+        } ?? false
+        let telemetryChanged = telemetry.map {
+            machineType != $0.machineType ||
+                leftCondensationTemperature != $0.leftCondensationTemperature ||
+                rightCondensationTemperature != $0.rightCondensationTemperature ||
+                environmentTemperature != $0.environmentTemperature ||
+                waterTemperature != $0.waterTemperature ||
+                coldCoreA != $0.coldCoreA || coldCoreB != $0.coldCoreB || coldCoreC != $0.coldCoreC ||
+                telemetryPumpPower != $0.pumpPower || telemetryFanPower != $0.fanPower
+        } ?? false
+        let changed = waterChanged || fanChanged || telemetryChanged ||
+            setTemperature != nextSetTemperature
+
+        if changed { objectWillChange.send() }
+        if let water {
+            confirmedWater = water.target
+            waterOutput = water.output
+            waterDemand = water.demand
+        }
+        if let fan {
+            confirmedFan = fan.target
+            fanOutput = fan.output
+            fanDemand = fan.demand
+        }
+        if let telemetry {
+            machineType = telemetry.machineType
+            leftCondensationTemperature = telemetry.leftCondensationTemperature
+            rightCondensationTemperature = telemetry.rightCondensationTemperature
+            environmentTemperature = telemetry.environmentTemperature
+            waterTemperature = telemetry.waterTemperature
+            coldCoreA = telemetry.coldCoreA
+            coldCoreB = telemetry.coldCoreB
+            coldCoreC = telemetry.coldCoreC
+            telemetryPumpPower = telemetry.pumpPower
+            telemetryFanPower = telemetry.fanPower
+            setTemperature = nextSetTemperature
+            if controlMode != .manual {
+                publishIfChanged("设备正在\(controlMode.title)运行；状态按节能频率刷新。",
+                                 at: \.statusMessage)
+            }
+        }
+        appendSamples(water: water, fan: fan)
+        updateOperatingState()
+        if controlMode == .manual,
+           let requestedWater, let requestedFan,
+           confirmedWater == requestedWater, confirmedFan == requestedFan {
+            publishIfChanged("设备已确认水泵 \(requestedWater)%、风扇 \(requestedFan)% 的目标值。",
+                             at: \.statusMessage)
+        }
+    }
+
+    private func clearPendingDisplay() {
+        displayPublishWorkItem?.cancel()
+        displayPublishWorkItem = nil
+        pendingWaterFeedback = nil
+        pendingFanFeedback = nil
+        pendingTelemetry = nil
+    }
+
+    private func publishIfChanged<Value: Equatable>(
+        _ value: Value,
+        at keyPath: ReferenceWritableKeyPath<CoolerManager, Value>
+    ) {
+        guard self[keyPath: keyPath] != value else { return }
+        self[keyPath: keyPath] = value
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic,
@@ -664,16 +796,17 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
 
     private func updateOperatingState() {
         if controlMode != .manual {
-            operatingState = .running
+            publishIfChanged(.running, at: \.operatingState)
             return
         }
         guard let confirmedWater, let confirmedFan else {
-            operatingState = .unknown
+            publishIfChanged(.unknown, at: \.operatingState)
             return
         }
         // The official app labels the real device as standby at its 42/42
         // safety floor. Values above that floor are its running state.
-        operatingState = confirmedWater > 42 || confirmedFan > 42 ? .running : .standby
+        publishIfChanged(confirmedWater > 42 || confirmedFan > 42 ? .running : .standby,
+                         at: \.operatingState)
     }
 
     func copyDiagnostics() {
@@ -693,9 +826,19 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
         if log.count > 300 { log.removeFirst(log.count - 300) }
     }
 
-    private func appendSample(_ channel: String, value: Int) {
-        guard (0...100).contains(value) else { return }
-        samples.append(PowerSample(timestamp: Date(), channel: channel, value: value))
+    private func appendSamples(water: ControllerFeedback?, fan: ControllerFeedback?) {
+        let now = Date()
+        var additions: [PowerSample] = []
+        for (channel, value) in [("水泵", water?.output), ("风扇", fan?.output)] {
+            guard let value, (0...100).contains(value),
+                  now.timeIntervalSince(lastSampleAt[channel] ?? .distantPast) >= displayPublishInterval else {
+                continue
+            }
+            lastSampleAt[channel] = now
+            additions.append(PowerSample(timestamp: now, channel: channel, value: value))
+        }
+        guard !additions.isEmpty else { return }
+        samples.append(contentsOf: additions)
         if samples.count > 240 { samples.removeFirst(samples.count - 240) }
     }
 }
