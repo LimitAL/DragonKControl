@@ -2,8 +2,9 @@ import Charts
 import SwiftUI
 
 struct MainView: View {
-    @StateObject private var manager = CoolerManager()
-    @StateObject private var hostMonitor = HostMonitor()
+    @ObservedObject private var model: AppModel
+    @ObservedObject private var manager: CoolerManager
+    @ObservedObject private var hostMonitor: HostMonitor
     @State private var waterLevel = 70.0
     @State private var fanLevel = 70.0
     @State private var editingProfile = DragonKControlMode.document
@@ -14,6 +15,12 @@ struct MainView: View {
     private let overviewColumns = [
         GridItem(.adaptive(minimum: 105, maximum: 150), spacing: 10)
     ]
+
+    init(model: AppModel) {
+        self.model = model
+        manager = model.manager
+        hostMonitor = model.hostMonitor
+    }
 
     var body: some View {
         ZStack {
@@ -42,10 +49,7 @@ struct MainView: View {
         .onAppear {
             waterLevel = Double(manager.requestedWater ?? 70)
             fanLevel = Double(manager.requestedFan ?? 70)
-            hostMonitor.start()
         }
-        .onDisappear { hostMonitor.stop() }
-        .onReceive(hostMonitor.$snapshot) { manager.evaluateSmartSwitch($0) }
     }
 
     private var heroHeader: some View {
@@ -75,6 +79,9 @@ struct MainView: View {
 
                 VStack(alignment: .trailing, spacing: 8) {
                     HStack(spacing: 7) {
+                        statusPill("\(model.loadPercentage)% 负载",
+                                   symbol: "gauge.with.dots.needle.50percent",
+                                   tint: loadTint)
                         statusPill(manager.controlMode.title,
                                    symbol: modeSymbol(manager.controlMode),
                                    tint: modeTint(manager.controlMode))
@@ -594,6 +601,14 @@ struct MainView: View {
         case .entertainment: return .purple
         case .expert: return .orange
         case .manual: return .teal
+        }
+    }
+
+    private var loadTint: Color {
+        switch model.loadPercentage {
+        case 0..<35: return .cyan
+        case 35..<70: return .orange
+        default: return .red
         }
     }
 
