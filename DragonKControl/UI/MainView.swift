@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MainView: View {
     @StateObject private var manager = CoolerManager()
+    @StateObject private var hostMonitor = HostMonitor()
     @State private var waterLevel = 70.0
     @State private var fanLevel = 70.0
     @State private var editingProfile = DragonKControlMode.document
@@ -22,6 +23,7 @@ struct MainView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     heroHeader
+                    hostLoadAndSmartControl
                     thermalOverview
                     modeControl
                     hardwareOutput
@@ -37,7 +39,10 @@ struct MainView: View {
         .onAppear {
             waterLevel = Double(manager.requestedWater ?? 70)
             fanLevel = Double(manager.requestedFan ?? 70)
+            hostMonitor.start()
         }
+        .onDisappear { hostMonitor.stop() }
+        .onReceive(hostMonitor.$snapshot) { manager.evaluateSmartSwitch($0) }
     }
 
     private var heroHeader: some View {
@@ -138,6 +143,86 @@ struct MainView: View {
         }
     }
 
+    private var hostLoadAndSmartControl: some View {
+        DashboardCard(title: "本机负载与智能切换",
+                      subtitle: "每 2 秒采样并短时平滑，由 macOS 传感器驱动三档模式",
+                      symbol: "macbook.and.iphone",
+                      tint: .indigo) {
+            LazyVGrid(columns: dashboardColumns, spacing: 14) {
+                hostMetricTile("CPU 封装功率",
+                               value: hostMonitor.snapshot.cpuPower,
+                               suffix: " W",
+                               precision: 1,
+                               symbol: "bolt.fill",
+                               tint: .orange)
+                hostMetricTile("整机功率",
+                               value: hostMonitor.snapshot.systemPower,
+                               suffix: " W",
+                               precision: 1,
+                               symbol: "powerplug.fill",
+                               tint: .yellow)
+                hostMetricTile("CPU 温度",
+                               value: hostMonitor.snapshot.cpuTemperature,
+                               suffix: "℃",
+                               precision: 1,
+                               symbol: "thermometer.high",
+                               tint: .red)
+                hostMetricTile("Mac 风扇",
+                               value: hostMonitor.snapshot.fanRPM,
+                               suffix: " RPM",
+                               precision: 0,
+                               symbol: "fanblades.fill",
+                               tint: .mint)
+            }
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("智能切换", systemImage: "wand.and.stars")
+                        .font(.headline)
+                    Text(manager.smartSwitchEnabled ? manager.smartStatus : hostMonitor.status)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { manager.smartSwitchEnabled },
+                    set: { manager.setSmartSwitchEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .accessibilityLabel("智能切换")
+            }
+            .padding(14)
+            .background(manager.smartSwitchEnabled ? Color.indigo.opacity(0.10) : Color.primary.opacity(0.035),
+                        in: RoundedRectangle(cornerRadius: 14))
+
+            VStack(spacing: 14) {
+                thresholdEditor("CPU 功率", current: hostMonitor.snapshot.cpuPower,
+                                unit: "W", range: 3...100, step: 1,
+                                entertainment: smartThresholdBinding(\.entertainmentPower),
+                                expert: smartThresholdBinding(\.expertPower),
+                                symbol: "bolt.fill", tint: .orange)
+                thresholdEditor("CPU 温度", current: hostMonitor.snapshot.cpuTemperature,
+                                unit: "℃", range: 35...100, step: 1,
+                                entertainment: smartThresholdBinding(\.entertainmentTemperature),
+                                expert: smartThresholdBinding(\.expertTemperature),
+                                symbol: "thermometer.high", tint: .red)
+                thresholdEditor("风扇转速", current: hostMonitor.snapshot.fanRPM,
+                                unit: "RPM", range: 1_000...8_000, step: 100,
+                                entertainment: smartThresholdBinding(\.entertainmentFanRPM),
+                                expert: smartThresholdBinding(\.expertFanRPM),
+                                symbol: "fanblades.fill", tint: .mint)
+            }
+            .disabled(!manager.smartSwitchEnabled)
+            .opacity(manager.smartSwitchEnabled ? 1 : 0.48)
+
+            Label("任一指标达到阈值会立即升档；降档要求所有可用指标回落，并保留回差和 20 秒驻留时间。",
+                  systemImage: "arrow.up.arrow.down.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var modeControl: some View {
         DashboardCard(title: "散热模式",
                       subtitle: "官方调度与每档独立参数",
@@ -147,6 +232,13 @@ struct MainView: View {
                 profileCard(.document, symbol: "doc.text.fill", tint: .blue)
                 profileCard(.entertainment, symbol: "play.rectangle.fill", tint: .purple)
                 profileCard(.expert, symbol: "gauge.with.dots.needle.67percent", tint: .orange)
+            }
+
+            if manager.smartSwitchEnabled {
+                Label("三档选择和固定输出已由智能切换接管",
+                      systemImage: "lock.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.indigo)
             }
 
             HStack(spacing: 10) {
@@ -351,7 +443,7 @@ struct MainView: View {
                     Label("应用\(editingProfile.title)", systemImage: "checkmark.circle.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!manager.canSend)
+                .disabled(!manager.canSend || manager.smartSwitchEnabled)
 
                 if let readback = manager.deviceProfileReadback[editingProfile] {
                     Label("设备回读：\(readback.control.title) \(readback.controlValue) · 泵 \(readback.pumpFixed) · 风扇 \(readback.fanMinimum)–\(readback.fanMaximum)",
@@ -390,7 +482,7 @@ struct MainView: View {
                 }
                 .buttonStyle(.borderedProminent)
             }
-            .disabled(!manager.canSend)
+            .disabled(!manager.canSend || manager.smartSwitchEnabled)
         }
         .padding(16)
         .background(Color.orange.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
@@ -438,7 +530,7 @@ struct MainView: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(!manager.canSend)
+        .disabled(!manager.canSend || manager.smartSwitchEnabled)
     }
 
     private func telemetryTile(_ title: String, _ value: Int?, suffix: String,
@@ -460,6 +552,113 @@ struct MainView: View {
         }
         .padding(14)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func hostMetricTile(_ title: String, value: Double?, suffix: String,
+                                precision: Int, symbol: String, tint: Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(tint)
+                .frame(width: 42, height: 42)
+                .background(tint.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(value.map { String(format: "%.*f%@", precision, $0, suffix) } ?? "—")
+                    .font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func thresholdEditor(_ title: String, current: Double?, unit: String,
+                                 range: ClosedRange<Double>, step: Double,
+                                 entertainment: Binding<Double>, expert: Binding<Double>,
+                                 symbol: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(title, systemImage: symbol)
+                    .font(.headline)
+                    .foregroundStyle(tint)
+                Spacer()
+                Text(current.map { thresholdValue($0, unit: unit) } ?? "当前 —")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            thresholdTrack(current: current, range: range,
+                           entertainment: entertainment.wrappedValue,
+                           expert: expert.wrappedValue)
+
+            HStack(spacing: 14) {
+                thresholdSlider("娱乐", value: entertainment, range: range, step: step,
+                                unit: unit, tint: .purple)
+                thresholdSlider("专家", value: expert, range: range, step: step,
+                                unit: unit, tint: .orange)
+            }
+        }
+        .padding(14)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func thresholdTrack(current: Double?, range: ClosedRange<Double>,
+                                entertainment: Double, expert: Double) -> some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let lower = range.lowerBound
+            let span = range.upperBound - lower
+            let entertainmentX = width * (entertainment - lower) / span
+            let expertX = width * (expert - lower) / span
+            let currentX = current.map { width * (min(max($0, lower), range.upperBound) - lower) / span }
+
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.blue.opacity(0.22))
+                Capsule().fill(Color.purple.opacity(0.34))
+                    .frame(width: max(0, expertX - entertainmentX))
+                    .offset(x: entertainmentX)
+                Capsule().fill(Color.orange.opacity(0.48))
+                    .frame(width: max(0, width - expertX))
+                    .offset(x: expertX)
+                if let currentX {
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(Color.primary.opacity(0.45), lineWidth: 2))
+                        .shadow(radius: 2)
+                        .offset(x: min(max(currentX - 6, 0), width - 12))
+                }
+            }
+        }
+        .frame(height: 12)
+    }
+
+    private func thresholdSlider(_ title: String, value: Binding<Double>,
+                                 range: ClosedRange<Double>, step: Double,
+                                 unit: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(title).font(.caption.weight(.semibold)).foregroundStyle(tint)
+                Spacer()
+                Text(thresholdValue(value.wrappedValue, unit: unit))
+                    .font(.caption.monospacedDigit())
+            }
+            Slider(value: value, in: range, step: step).tint(tint)
+        }
+    }
+
+    private func thresholdValue(_ value: Double, unit: String) -> String {
+        unit == "W" ? String(format: "%.1f %@", value, unit) :
+            String(format: "%.0f %@", value, unit)
+    }
+
+    private func smartThresholdBinding(_ keyPath: WritableKeyPath<SmartSwitchThresholds, Double>) -> Binding<Double> {
+        Binding {
+            manager.smartThresholds[keyPath: keyPath]
+        } set: { value in
+            manager.updateSmartThresholds { $0[keyPath: keyPath] = value }
+        }
     }
 
     private func powerTile(_ title: String, _ value: Int?, symbol: String, tint: Color) -> some View {

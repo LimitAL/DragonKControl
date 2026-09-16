@@ -68,6 +68,10 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     @Published var autoReconnect = UserDefaults.standard.object(forKey: "autoReconnect") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoReconnect, forKey: "autoReconnect") }
     }
+    @Published private(set) var smartSwitchEnabled = UserDefaults.standard.bool(forKey: "smartSwitchEnabled")
+    @Published private(set) var smartThresholds = CoolerManager.savedSmartThresholds()
+    @Published private(set) var smartStatus = "智能切换未开启"
+    @Published private(set) var lastSmartSwitchAt: Date?
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -82,6 +86,7 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     private var handshakeGeneration = 0
     private var controlTimer: Timer?
     private let controlInterval: TimeInterval = 1.5
+    private let smartMinimumDwell: TimeInterval = 20
 #if DEBUG
     private var didScheduleDebugDisconnect = false
 #endif
@@ -109,6 +114,14 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
             }
         }
         return profiles
+    }
+
+    private static func savedSmartThresholds() -> SmartSwitchThresholds {
+        guard let data = UserDefaults.standard.data(forKey: "smartSwitchThresholds"),
+              let stored = try? JSONDecoder().decode(SmartSwitchThresholds.self, from: data) else {
+            return .defaults
+        }
+        return stored.normalized()
     }
 
     override init() {
@@ -403,11 +416,98 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
 
     func applyProfile(_ mode: DragonKControlMode) {
         guard mode != .manual else { return }
+        guard !smartSwitchEnabled else {
+            statusMessage = "智能切换已接管模式；关闭后才能手动切档。"
+            return
+        }
+        applyProfile(mode, reason: "用户切换到\(mode.title)", announce: true)
+    }
+
+    private func applyProfile(_ mode: DragonKControlMode, reason: String, announce: Bool) {
         controlMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "controlMode")
-        writeActiveConfiguration(reason: "用户切换到\(mode.title)", announce: true)
+        writeActiveConfiguration(reason: reason, announce: announce)
         startControlLoop(restoring: false, sendImmediately: false)
         updateOperatingState()
+    }
+
+    func setSmartSwitchEnabled(_ enabled: Bool) {
+        smartSwitchEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "smartSwitchEnabled")
+        lastSmartSwitchAt = nil
+        smartStatus = enabled ? "等待下一次本机传感器采样" : "智能切换未开启"
+        statusMessage = enabled ? "智能切换已接管三档模式，手动控制暂时锁定。" : "智能切换已关闭，可以手动选择模式。"
+        note(enabled ? "智能切换已开启" : "智能切换已关闭")
+    }
+
+    func updateSmartThresholds(_ update: (inout SmartSwitchThresholds) -> Void) {
+        var thresholds = smartThresholds
+        update(&thresholds)
+        smartThresholds = thresholds.normalized()
+        if let data = try? JSONEncoder().encode(smartThresholds) {
+            UserDefaults.standard.set(data, forKey: "smartSwitchThresholds")
+        }
+    }
+
+    func evaluateSmartSwitch(_ sample: HostSensorSnapshot) {
+        guard smartSwitchEnabled else { return }
+        guard sample.hasAnyValue else {
+            smartStatus = "没有可参与判断的本机指标"
+            return
+        }
+
+        let currentRank = modeRank(controlMode)
+        let temperatureHysteresis = currentRank > 0 ? 3.0 : 0
+        let powerHysteresis = currentRank > 0 ? 2.0 : 0
+        let fanHysteresis = currentRank > 0 ? 250.0 : 0
+        let expertActive = reachesAny(sample,
+                                      power: smartThresholds.expertPower - (currentRank == 2 ? powerHysteresis : 0),
+                                      temperature: smartThresholds.expertTemperature - (currentRank == 2 ? temperatureHysteresis : 0),
+                                      fan: smartThresholds.expertFanRPM - (currentRank == 2 ? fanHysteresis : 0))
+        let entertainmentActive = reachesAny(sample,
+                                             power: smartThresholds.entertainmentPower - (currentRank >= 1 ? powerHysteresis : 0),
+                                             temperature: smartThresholds.entertainmentTemperature - (currentRank >= 1 ? temperatureHysteresis : 0),
+                                             fan: smartThresholds.entertainmentFanRPM - (currentRank >= 1 ? fanHysteresis : 0))
+        let desired: DragonKControlMode = expertActive ? .expert : (entertainmentActive ? .entertainment : .document)
+        smartStatus = smartReason(sample, desired: desired)
+
+        guard canSend else { return }
+        guard controlMode != desired else { return }
+        if let lastSmartSwitchAt,
+           modeRank(desired) < currentRank,
+           Date().timeIntervalSince(lastSmartSwitchAt) < smartMinimumDwell {
+            let remaining = Int(ceil(smartMinimumDwell - Date().timeIntervalSince(lastSmartSwitchAt)))
+            smartStatus += " · \(remaining) 秒后允许降档"
+            return
+        }
+
+        lastSmartSwitchAt = Date()
+        applyProfile(desired, reason: "智能切换到\(desired.title)", announce: true)
+        note("智能判断：\(smartStatus)")
+    }
+
+    private func reachesAny(_ sample: HostSensorSnapshot,
+                            power: Double, temperature: Double, fan: Double) -> Bool {
+        (sample.cpuPower.map { $0 >= power } ?? false) ||
+            (sample.cpuTemperature.map { $0 >= temperature } ?? false) ||
+            (sample.fanRPM.map { $0 >= fan } ?? false)
+    }
+
+    private func modeRank(_ mode: DragonKControlMode) -> Int {
+        switch mode {
+        case .document: return 0
+        case .entertainment: return 1
+        case .expert: return 2
+        case .manual: return -1
+        }
+    }
+
+    private func smartReason(_ sample: HostSensorSnapshot, desired: DragonKControlMode) -> String {
+        var values: [String] = []
+        if let value = sample.cpuPower { values.append(String(format: "CPU %.1f W", value)) }
+        if let value = sample.cpuTemperature { values.append(String(format: "%.1f℃", value)) }
+        if let value = sample.fanRPM { values.append(String(format: "%.0f RPM", value)) }
+        return "\(values.joined(separator: " · ")) → \(desired.title)"
     }
 
     func settings(for mode: DragonKControlMode) -> DragonKProfileSettings {
@@ -427,6 +527,10 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     }
 
     func enterStandby() {
+        guard !smartSwitchEnabled else {
+            statusMessage = "智能切换已接管输出；关闭后才能手动待机。"
+            return
+        }
         sendTargets(water: 42, fan: 42)
         statusMessage = "已请求待机（设备安全最低档 42/42），等待设备确认…"
     }
@@ -436,6 +540,10 @@ final class CoolerManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     }
 
     func sendTargets(water: Int, fan: Int) {
+        guard !smartSwitchEnabled else {
+            statusMessage = "智能切换已接管输出；关闭后才能设置固定输出。"
+            return
+        }
         controlMode = .manual
         UserDefaults.standard.set(controlMode.rawValue, forKey: "controlMode")
         rememberTargets(water: water, fan: fan)
