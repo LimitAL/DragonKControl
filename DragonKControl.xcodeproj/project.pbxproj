@@ -1,0 +1,68 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* DragonKControlApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* DragonKControlApp.swift */; };
+		A10000000000000000000002 /* CoolerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* CoolerManager.swift */; };
+		A10000000000000000000003 /* DragonKProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* DragonKProtocol.swift */; };
+		A10000000000000000000004 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* MainView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* DragonKControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragonKControlApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* CoolerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoolerManager.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* DragonKProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragonKProtocol.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000006 /* DragonKControl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DragonKControl.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000007 /* DragonKControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DragonKControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A30000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A40000000000000000000001 = {isa = PBXGroup; children = (A40000000000000000000002 /* DragonKControl */, A40000000000000000000007 /* Products */); sourceTree = "<group>"; };
+		A40000000000000000000002 /* DragonKControl */ = {isa = PBXGroup; children = (A20000000000000000000001 /* DragonKControlApp.swift */, A40000000000000000000003 /* Bluetooth */, A40000000000000000000004 /* Protocol */, A40000000000000000000005 /* UI */, A40000000000000000000006 /* Resources */); path = DragonKControl; sourceTree = "<group>"; };
+		A40000000000000000000003 /* Bluetooth */ = {isa = PBXGroup; children = (A20000000000000000000002 /* CoolerManager.swift */); path = Bluetooth; sourceTree = "<group>"; };
+		A40000000000000000000004 /* Protocol */ = {isa = PBXGroup; children = (A20000000000000000000003 /* DragonKProtocol.swift */); path = Protocol; sourceTree = "<group>"; };
+		A40000000000000000000005 /* UI */ = {isa = PBXGroup; children = (A20000000000000000000004 /* MainView.swift */); path = UI; sourceTree = "<group>"; };
+		A40000000000000000000006 /* Resources */ = {isa = PBXGroup; children = (A20000000000000000000005 /* Info.plist */, A20000000000000000000006 /* DragonKControl.entitlements */); path = Resources; sourceTree = "<group>"; };
+		A40000000000000000000007 /* Products */ = {isa = PBXGroup; children = (A20000000000000000000007 /* DragonKControl.app */); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 /* DragonKControl */ = {isa = PBXNativeTarget; buildConfigurationList = A80000000000000000000002 /* Build configuration list for PBXNativeTarget */; buildPhases = (A30000000000000000000002 /* Sources */, A30000000000000000000001 /* Frameworks */, A30000000000000000000003 /* Resources */); buildRules = (); dependencies = (); name = DragonKControl; productName = DragonKControl; productReference = A20000000000000000000007 /* DragonKControl.app */; productType = "com.apple.product-type.application"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A60000000000000000000001 /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 1650; TargetAttributes = {A50000000000000000000001 = {CreatedOnToolsVersion = 26.5; LastSwiftMigration = 1650; }; }; }; buildConfigurationList = A80000000000000000000001 /* Build configuration list for PBXProject */; compatibilityVersion = "Xcode 14.0"; developmentRegion = zh_CN; hasScannedForEncodings = 0; knownRegions = (zh_CN, Base); mainGroup = A40000000000000000000001; productRefGroup = A40000000000000000000007 /* Products */; projectDirPath = ""; projectRoot = ""; targets = (A50000000000000000000001 /* DragonKControl */); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A30000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A30000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001 /* DragonKControlApp.swift in Sources */, A10000000000000000000002 /* CoolerManager.swift in Sources */, A10000000000000000000003 /* DragonKProtocol.swift in Sources */, A10000000000000000000004 /* MainView.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A70000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 13.0; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Debug; };
+		A70000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 13.0; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Release; };
+		A70000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_ENTITLEMENTS = DragonKControl/Resources/DragonKControl.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 2; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DragonKControl/Resources/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks"); MACOSX_DEPLOYMENT_TARGET = 13.0; MARKETING_VERSION = 1.1; PRODUCT_BUNDLE_IDENTIFIER = local.codex.dragonkcontrol; PRODUCT_NAME = DragonKControl; SWIFT_VERSION = 5.0; }; name = Debug; };
+		A70000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_ENTITLEMENTS = DragonKControl/Resources/DragonKControl.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 2; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = DragonKControl/Resources/Info.plist; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks"); MACOSX_DEPLOYMENT_TARGET = 13.0; MARKETING_VERSION = 1.1; PRODUCT_BUNDLE_IDENTIFIER = local.codex.dragonkcontrol; PRODUCT_NAME = DragonKControl; SWIFT_VERSION = 5.0; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A80000000000000000000001 /* Build configuration list for PBXProject */ = {isa = XCConfigurationList; buildConfigurations = (A70000000000000000000001 /* Debug */, A70000000000000000000002 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A80000000000000000000002 /* Build configuration list for PBXNativeTarget */ = {isa = XCConfigurationList; buildConfigurations = (A70000000000000000000003 /* Debug */, A70000000000000000000004 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A60000000000000000000001 /* Project object */;
+}
