@@ -11,6 +11,9 @@ struct MainView: View {
     private let dashboardColumns = [
         GridItem(.adaptive(minimum: 168, maximum: 260), spacing: 14)
     ]
+    private let overviewColumns = [
+        GridItem(.adaptive(minimum: 105, maximum: 150), spacing: 10)
+    ]
 
     var body: some View {
         ZStack {
@@ -46,64 +49,107 @@ struct MainView: View {
     }
 
     private var heroHeader: some View {
-        HStack(spacing: 18) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.cyan.opacity(0.9), .blue],
-                                         startPoint: .topLeading,
-                                         endPoint: .bottomTrailing))
-                Image(systemName: "snowflake")
-                    .font(.system(size: 32, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 68, height: 68)
-            .shadow(color: .cyan.opacity(0.25), radius: 16, y: 8)
+        VStack(spacing: 15) {
+            HStack(spacing: 18) {
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [.cyan.opacity(0.9), .blue],
+                                             startPoint: .topLeading,
+                                             endPoint: .bottomTrailing))
+                    Image(systemName: "snowflake")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 62, height: 62)
+                .shadow(color: .cyan.opacity(0.25), radius: 16, y: 8)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("DragonK Control")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                Text(targetName)
-                    .font(.subheadline.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 16)
-
-            VStack(alignment: .trailing, spacing: 9) {
-                HStack(spacing: 8) {
-                    statusPill(manager.connectionState,
-                               symbol: manager.isConnected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right",
-                               tint: manager.isConnected ? .green : .orange)
-                    statusPill(manager.operatingState.rawValue,
-                               symbol: manager.operatingState == .running ? "bolt.fill" : "pause.fill",
-                               tint: manager.operatingState == .running ? .cyan : .gray)
-                    if !manager.rssi.isEmpty {
-                        statusPill(manager.rssi, symbol: "wave.3.right", tint: .gray)
-                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("DragonK Control")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                    Text(targetName)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
                 }
 
-                HStack(spacing: 8) {
-                    Toggle(isOn: $manager.autoReconnect) {
-                        Label("自动重连", systemImage: "arrow.triangle.2.circlepath")
+                Spacer(minLength: 12)
+
+                VStack(alignment: .trailing, spacing: 8) {
+                    HStack(spacing: 7) {
+                        statusPill(manager.controlMode.title,
+                                   symbol: modeSymbol(manager.controlMode),
+                                   tint: modeTint(manager.controlMode))
+                        statusPill(manager.connectionState,
+                                   symbol: manager.isConnected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right",
+                                   tint: manager.isConnected ? .green : .orange)
+                        statusPill(manager.operatingState.rawValue,
+                                   symbol: manager.operatingState == .running ? "bolt.fill" : "pause.fill",
+                                   tint: manager.operatingState == .running ? .cyan : .gray)
+                        if !manager.rssi.isEmpty {
+                            statusPill(manager.rssi, symbol: "wave.3.right", tint: .gray)
+                        }
                     }
-                    .toggleStyle(.switch)
+
+                    HStack(spacing: 8) {
+                        if manager.smartSwitchEnabled {
+                            Label("智能接管", systemImage: "wand.and.stars")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.indigo)
+                        }
+                        Toggle(isOn: $manager.autoReconnect) {
+                            Label("自动重连", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+
+                        Button {
+                            manager.scan()
+                        } label: {
+                            Label("扫描连接", systemImage: "antenna.radiowaves.left.and.right")
+                        }
+                        .disabled(manager.bluetoothState != "蓝牙已开启" || manager.isConnected)
+
+                        Button(role: .destructive) {
+                            manager.disconnect()
+                        } label: {
+                            Label("断开", systemImage: "xmark.circle")
+                        }
+                        .disabled(!manager.isConnected)
+                    }
                     .controlSize(.small)
-
-                    Button {
-                        manager.scan()
-                    } label: {
-                        Label("扫描连接", systemImage: "antenna.radiowaves.left.and.right")
-                    }
-                    .disabled(manager.bluetoothState != "蓝牙已开启" || manager.isConnected)
-
-                    Button(role: .destructive) {
-                        manager.disconnect()
-                    } label: {
-                        Label("断开", systemImage: "xmark.circle")
-                    }
-                    .disabled(!manager.isConnected)
                 }
-                .controlSize(.small)
+            }
+
+            Divider().opacity(0.7)
+
+            LazyVGrid(columns: overviewColumns, spacing: 10) {
+                overviewTile("CPU 封装",
+                             value: hostMonitor.snapshot.cpuPower.map { String(format: "%.1f W", $0) } ?? "—",
+                             symbol: "bolt.fill", tint: .orange)
+                overviewTile("整机功率",
+                             value: hostMonitor.snapshot.systemPower.map { String(format: "%.1f W", $0) } ?? "—",
+                             symbol: "powerplug.fill", tint: .yellow)
+                overviewTile("CPU 温度",
+                             value: hostMonitor.snapshot.cpuTemperature.map { String(format: "%.1f℃", $0) } ?? "—",
+                             symbol: "thermometer.high", tint: .red)
+                overviewTile("Mac 风扇",
+                             value: hostMonitor.snapshot.fanRPM.map { String(format: "%.0f RPM", $0) } ?? "—",
+                             symbol: "fanblades.fill", tint: .mint)
+                overviewTile("冷凝面",
+                             value: pairedTemperature(manager.leftCondensationTemperature,
+                                                      manager.rightCondensationTemperature),
+                             symbol: "snowflake", tint: .cyan)
+                overviewTile("水温",
+                             value: temperatureValue(manager.waterTemperature),
+                             symbol: "drop.fill", tint: .teal)
+                overviewTile("冷核最高",
+                             value: maximumPower(manager.coldCoreA, manager.coldCoreB, manager.coldCoreC),
+                             symbol: "cpu.fill", tint: .indigo)
+                overviewTile("水泵功率",
+                             value: percentValue(manager.telemetryPumpPower),
+                             symbol: "drop.circle.fill", tint: .teal)
+                overviewTile("设备风扇",
+                             value: percentValue(manager.telemetryFanPower),
+                             symbol: "fanblades.fill", tint: .green)
             }
         }
         .padding(20)
@@ -148,33 +194,6 @@ struct MainView: View {
                       subtitle: "每 2 秒采样并短时平滑，由 macOS 传感器驱动三档模式",
                       symbol: "macbook.and.iphone",
                       tint: .indigo) {
-            LazyVGrid(columns: dashboardColumns, spacing: 14) {
-                hostMetricTile("CPU 封装功率",
-                               value: hostMonitor.snapshot.cpuPower,
-                               suffix: " W",
-                               precision: 1,
-                               symbol: "bolt.fill",
-                               tint: .orange)
-                hostMetricTile("整机功率",
-                               value: hostMonitor.snapshot.systemPower,
-                               suffix: " W",
-                               precision: 1,
-                               symbol: "powerplug.fill",
-                               tint: .yellow)
-                hostMetricTile("CPU 温度",
-                               value: hostMonitor.snapshot.cpuTemperature,
-                               suffix: "℃",
-                               precision: 1,
-                               symbol: "thermometer.high",
-                               tint: .red)
-                hostMetricTile("Mac 风扇",
-                               value: hostMonitor.snapshot.fanRPM,
-                               suffix: " RPM",
-                               precision: 0,
-                               symbol: "fanblades.fill",
-                               tint: .mint)
-            }
-
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("智能切换", systemImage: "wand.and.stars")
@@ -533,6 +552,72 @@ struct MainView: View {
         .disabled(!manager.canSend || manager.smartSwitchEnabled)
     }
 
+    private func overviewTile(_ title: String, value: String,
+                              symbol: String, tint: Color) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(value)
+                    .font(.callout.weight(.semibold).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func modeSymbol(_ mode: DragonKControlMode) -> String {
+        switch mode {
+        case .document: return "doc.text.fill"
+        case .entertainment: return "play.rectangle.fill"
+        case .expert: return "gauge.with.dots.needle.67percent"
+        case .manual: return "slider.horizontal.3"
+        }
+    }
+
+    private func modeTint(_ mode: DragonKControlMode) -> Color {
+        switch mode {
+        case .document: return .blue
+        case .entertainment: return .purple
+        case .expert: return .orange
+        case .manual: return .teal
+        }
+    }
+
+    private func temperatureValue(_ value: Int?) -> String {
+        value.map { "\($0)℃" } ?? "—"
+    }
+
+    private func pairedTemperature(_ left: Int?, _ right: Int?) -> String {
+        switch (left, right) {
+        case let (.some(left), .some(right)): return "\(left) / \(right)℃"
+        case let (.some(value), .none), let (.none, .some(value)): return "\(value)℃"
+        case (.none, .none): return "—"
+        }
+    }
+
+    private func percentValue(_ value: Int?) -> String {
+        value.map { "\($0)%" } ?? "—"
+    }
+
+    private func maximumPower(_ first: Int?, _ second: Int?, _ third: Int?) -> String {
+        guard let maximum = [first, second, third].compactMap({ $0 }).max() else { return "—" }
+        return "\(maximum)%"
+    }
+
     private func telemetryTile(_ title: String, _ value: Int?, suffix: String,
                                symbol: String, tint: Color) -> some View {
         HStack(spacing: 12) {
@@ -546,25 +631,6 @@ struct MainView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(value.map { "\($0)\(suffix)" } ?? "—")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    private func hostMetricTile(_ title: String, value: Double?, suffix: String,
-                                precision: Int, symbol: String, tint: Color) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(tint)
-                .frame(width: 42, height: 42)
-                .background(tint.opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.caption).foregroundStyle(.secondary)
-                Text(value.map { String(format: "%.*f%@", precision, $0, suffix) } ?? "—")
                     .font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
             }
             Spacer(minLength: 0)
